@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(GATEWAY_DEMO_REAL=1 python examples/gateway_demo.py)",
+      "Bash(ls \"C:/Users/ngocbtb2/.claude/projects/d--AI-Project-ai-ds-agent-code-ngocbtb/memory/\" 2>/dev/null && echo \"---\" && cat \"C:/Users/ngocbtb2/.claude/projects/d--AI-Project-ai-ds-agent-code-ngocbtb/memory/MEMORY.md\" 2>/dev/null)",
+      "Read(//c/Users/ngocbtb2/.claude/projects/d--AI-Project-ai-ds-agent-code-ngocbtb/memory/**)",
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile Agents/TrainModel/agent_train_model.py pipeline.py config.py ui/render.py main.py replay_driver.py)",
+      "Read(//d//**)",
+      "Bash(python -m pytest tests/test_feature_selection.py tests/test_optuna_guard.py tests/test_review_fixes.py tests/test_replay_reproducibility.py -q)",
+      "Read(//c/Users/ngocbtb2/.claude/**)",
+      "Bash(pip install *)",
+      "Bash(python -c \"import optuna, shap; print\\(f'✓ optuna {optuna.__version__}'\\); print\\(f'✓ shap {shap.__version__}'\\)\")",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\")",
+      "Bash(tasklist //FI \"IMAGENAME eq streamlit.exe\")",
+      "Bash(python -W ignore -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -W ignore -c ' *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:8599/)",
+      "Bash(python -c \"import playwright\")",
+      "Bash(where chrome *)"
+    ]
+  }
+}

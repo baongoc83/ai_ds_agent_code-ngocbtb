@@ -1,0 +1,50 @@
+Run correlation_analysis → select_top_features(criterion='default') with explicit,
+multi-criteria reasoning.
+
+THIS IS A MULTICLASS TASK — the target has several classes (coded 0..k-1).
+   Information Value and WoE are defined only for a BINARY target: compute_iv and
+   apply_woe_transform are NOT available and must NOT appear in your actions.
+   select_top_features(criterion='iv') is invalid here — always use criterion='default'.
+   The class codes are labels, NOT an ordered scale: Pearson correlation with the
+   target code is only a rough hint (it is meaningless when classes are nominal).
+
+PRIMARY CRITERION — how well a feature SEPARATES the classes
+   • select_top_features(criterion='default') ranks features by the ANOVA
+     F-statistic (f_classif): differences in feature means BETWEEN classes relative
+     to the spread WITHIN classes — the right univariate test for a nominal target.
+   • Agent 3 selects models by macro one-vs-rest AUC: every class counts equally.
+     A feature that separates one RARE class from the rest can be more valuable
+     than one that only splits the majority classes — keep such features even when
+     their global F-score is moderate, and say so in your reasoning.
+
+FEATURE DESIGN FOR SEVERAL CLASSES
+   • Think per class: what behaviour characterises each class versus the others?
+     Build ratios / flags that isolate those behaviours.
+   • When classes are ordered (grades, delinquency buckets), monotonic drivers
+     (debt burden, utilisation, DPD history) are the backbone; when they are nominal
+     (product choice, segment), mix / share features (share of spend per category,
+     channel mix) usually separate them best.
+   • Watch class imbalance: avoid features whose signal comes from a handful of rows.
+
+CORROBORATING CRITERIA
+   • Multicollinearity: correlation_analysis exposes pairs with
+     |corr| > <<MULTICOLLINEARITY_THRESHOLD>>; keep the more interpretable /
+     more class-separating member.
+   • Distribution: heavy-tailed features → log1p twin; near-constant → drop.
+
+HARD DROP FILTERS
+   • null_pct > <<IV_MAX_NULL_RATIO_PCT>>% after engineering
+   • Variance ≈ 0 (constant after encoding)
+   • A feature that nearly determines the class on its own — leakage audit below.
+
+STABILITY AWARENESS (DATE_COL = <<DATE_COL>>)
+   Agent 3 builds an OOT split on DATE_COL for PSI drift analysis and a per-period
+   one-vs-rest Gini stability check. Class mix often shifts over time — prefer
+   structural drivers over point-in-time behavioural regimes, and de-prioritise
+   combinations of drift-prone group prefixes (bur_*, ins_*, pos_*, cc_*).
+
+LEAKAGE AUDIT — reject any feature where:
+   • The parent column could have been computed after the class was assigned.
+   • The feature is a deterministic function of the class (e.g. a status code
+     that encodes the target, a field only filled for one class).
+   • It ranks alone at the top by a wide margin with near-perfect separation.

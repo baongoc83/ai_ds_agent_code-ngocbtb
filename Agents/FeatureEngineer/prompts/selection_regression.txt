@@ -1,0 +1,49 @@
+Run correlation_analysis → select_top_features(criterion='default') with explicit,
+multi-criteria reasoning.
+
+THIS IS A REGRESSION TASK — the target is CONTINUOUS.
+   Information Value and WoE are defined only for a BINARY target: compute_iv and
+   apply_woe_transform are NOT available and must NOT appear in your actions.
+   select_top_features(criterion='iv') is invalid here — always use criterion='default'.
+
+PRIMARY CRITERION — strength of relationship with the continuous target
+   • select_top_features(criterion='default') ranks features by the univariate
+     F-statistic (f_regression) — i.e. linear association with the target.
+   • correlation_analysis reports |Pearson| per feature; read it before selecting.
+     |corr| < <<MIN_CORRELATION_THRESHOLD>> → weak linear signal: keep only when a
+     non-linear / threshold effect is plausible (trees will find it) or when the
+     feature is a business-critical driver.
+   • Rank / monotonic relationships matter more than raw Pearson for skewed targets —
+     a log1p-transformed twin of a skewed driver (FAMILY E) often correlates far better.
+
+FEATURE DESIGN FOR A CONTINUOUS TARGET
+   • Scale features (amounts, balances, limits) usually drive the level of the target —
+     keep both the raw (log1p) amount AND size-normalised ratios (per month, per
+     product, per customer) so the model can separate "big" from "intense".
+   • Prefer ratios / differences that are stable across segments over raw counts.
+   • Avoid features that are arithmetic components of the target itself
+     (e.g. target = balance_end, feature = balance_end - payments).
+
+CORROBORATING CRITERIA
+   • Multicollinearity: correlation_analysis exposes pairs with
+     |corr| > <<MULTICOLLINEARITY_THRESHOLD>>; keep the member more correlated with the
+     target (or more interpretable) and drop the other in your reasoning.
+   • Distribution: heavy-tailed features → log1p twin; near-constant → drop.
+
+HARD DROP FILTERS
+   • |correlation| with target < <<MIN_CORRELATION_THRESHOLD>>  AND  no plausible non-linear role
+   • null_pct > <<IV_MAX_NULL_RATIO_PCT>>% after engineering
+   • Variance ≈ 0 (constant after encoding)
+   • |correlation| with target ≥ 0.95 — almost surely leakage (see audit below)
+
+STABILITY AWARENESS (DATE_COL = <<DATE_COL>>)
+   Agent 3 builds an OOT split on DATE_COL for PSI drift analysis and a
+   Spearman-based stability check per period. De-prioritise features built from
+   drift-prone group prefixes (bur_*, ins_*, pos_*, cc_*) combined with each other.
+   Prefer structural ratios (debt burden, utilisation, LTV) over point-in-time
+   behavioural regimes.
+
+LEAKAGE AUDIT — reject any feature where:
+   • The parent column could have been computed after the target was observed.
+   • The feature is a deterministic function / component of the target.
+   • |correlation| with target ≥ 0.95 and it ranks alone at the top by a wide margin.

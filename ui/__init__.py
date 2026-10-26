@@ -1,0 +1,1 @@
+"""Streamlit web UI for the AutoML pipeline."""

@@ -1,0 +1,59 @@
+Run compute_iv → apply_woe_transform → correlation_analysis → select_top_features(criterion='iv')
+with explicit, multi-criteria reasoning.
+
+WoE TRANSFORMATION (apply_woe_transform — scorecard banking standard)
+   After compute_iv, replace each feature value with its bin's WoE (log-odds).
+   Effect on the data:
+     • Linearises feature ↔ target relationship → LR baseline becomes strong
+     • Smooths non-linearity → GBM splits cleaner, less overfit on tails
+     • NaN gets its own bin WoE → missing-pattern signal preserved as a real
+       numeric value (no separate flag needed)
+   Skips features with IV < <<MIN_CORRELATION_THRESHOLD>> (noise > signal).
+   Typically +1-3% AUC on credit data. Run BEFORE correlation_analysis so
+   the Pearson check sees the WoE-transformed space (where collinearity
+   between scorecard candidates is more meaningful).
+
+PRIMARY CRITERION — Information Value (Siddiqi 2006 bands)
+   IV < 0.02   → drop (no predictive power)
+   0.02 ≤ IV < 0.10  → weak — keep only if monotonic AND stable
+   0.10 ≤ IV < 0.30  → medium — prefer
+   0.30 ≤ IV < <<IV_LEAKAGE_THRESHOLD>>  → strong — prioritise
+   IV ≥ <<IV_LEAKAGE_THRESHOLD>>         → suspicious — leakage audit before keeping
+   (compute_iv flags these as "leakage_suspects" in its JSON return.)
+
+CORROBORATING CRITERIA
+   • |Pearson correlation| with target — for linear baseline alignment
+   • Monotonicity of WoE across numeric bins — scorecard-friendliness
+   • Multicollinearity: handled AUTOMATICALLY by select_top_features(criterion='iv').
+     The tool greedily drops the lower-IV partner from any pair with
+     |corr| > <<MULTICOLLINEARITY_THRESHOLD>>. You don't need to enumerate dropped pairs.
+
+HARD DROP FILTERS
+   • |correlation| with target < <<MIN_CORRELATION_THRESHOLD>>  AND  IV < 0.02
+   • null_pct > <<IV_MAX_NULL_RATIO_PCT>>% after engineering (compute_iv pre-filters these)
+   • Variance ≈ 0 (constant after encoding — compute_iv pre-filters these)
+   • IV ≥ <<IV_LEAKAGE_THRESHOLD>> unless the feature is explicitly whitelisted as a strong
+     external score (e.g. ext_source_*) — suspicious IV usually = leakage.
+
+STABILITY AWARENESS (DATE_COL = <<DATE_COL>>)
+   Agent 3 builds an OOT split on DATE_COL for PSI drift analysis.
+   De-prioritise features built from drift-prone group prefixes
+   (bur_*, ins_*, pos_*, cc_*) combined with each other — joint drift is
+   common. Cross-group features (application × bureau, application × cc)
+   are usually more stable than within-bureau composites.
+
+   After your actions run, this agent re-scores every selected feature's IV on
+   the OOT partition using the bin edges frozen from TRAIN, and reports
+   iv_train vs iv_oot plus the correlation between the two WoE vectors. That
+   catches what PSI cannot: a feature whose distribution is stable but whose
+   relationship to the target weakens or REVERSES out of time. You do not emit
+   an action for this — it is an automatic post-check. What it means for you:
+   prefer features whose relationship to default is structural (debt burden,
+   utilisation, LTV) over ones that ride a point-in-time behavioural regime,
+   because the latter are what show up as WoE reversals.
+
+LEAKAGE AUDIT — reject any feature where:
+   • The parent column could have been computed after the target event
+     (post-default flags, post-charge-off updates).
+   • The feature is a deterministic function of the target.
+   • IV ≥ <<IV_LEAKAGE_THRESHOLD>> and the feature ranks alone at the top by a wide margin.
