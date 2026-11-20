@@ -50,8 +50,13 @@ workspace đang chọn**.
 
 ## 2. Nguồn dữ liệu
 
-- **Đường dẫn local** — file trên máy chạy server, hoặc URI `s3://` · `s3a://` · `s3n://`.
-- **Upload file** — lưu vào `workspace/_uploads/` (một lần cho mỗi file).
+- **💻 Máy của bạn (upload)** — chọn file trên máy tính đang mở trình duyệt; file được gửi
+  lên server và lưu vào `workspace/_uploads/` (một lần cho mỗi file).
+- **🖥️ Máy server** — file đã có sẵn trên máy chạy app: chọn trong danh sách hoặc nhập
+  đường dẫn. Chỉ đọc được file nằm trong các thư mục `SERVER_DATA_DIRS` (.env, phân cách
+  `;` hoặc `,`, mặc định `data/` của repo) — người dùng chung server không duyệt được
+  phần còn lại của ổ đĩa. Dataset nhiều GB nên chép sẵn lên server rồi chọn ở đây.
+- **☁️ S3** — URI `s3://` · `s3a://` · `s3n://`.
 
 Định dạng: csv / tsv / txt (tự nhận dấu phân cách `, ; tab |`, encoding và dấu thập phân
 `1,5`), parquet, feather, orc, xlsx / xls / xlsm, json / jsonl; nén `.gz .bz2 .xz .zip .zst`.
