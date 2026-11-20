@@ -188,6 +188,93 @@ def _s3_credentials_panel(path: str) -> None:
                 st.error(f"Không truy cập được: {type(e).__name__}: {e}")
 
 
+# ── server-side files ─────────────────────────────────────────────────────
+# "Máy server" reads files already on the machine running the app. Several users
+# share one deploy, so only folders listed in SERVER_DATA_DIRS can be browsed or
+# typed — never the whole server disk. Default: the repo's data/ folder.
+
+REPO = Path(__file__).resolve().parents[1]
+SRC_UPLOAD, SRC_SERVER, SRC_S3 = "💻 Máy của bạn (upload)", "🖥️ Máy server", "☁️ S3"
+SERVER_LIST_CAP = 2000
+_DATA_SUFFIXES = tuple(f".{t}" for t in DATA_FILE_TYPES)
+
+
+def _server_roots() -> list:
+    """Existing folders from SERVER_DATA_DIRS ('dirA;dirB' — ';' or ','; relative
+    paths are relative to the repo)."""
+    roots = []
+    for p in re.split(r"[;,]", os.getenv("SERVER_DATA_DIRS", "") or "data"):
+        if p.strip():
+            path = Path(p.strip()).expanduser()
+            path = (path if path.is_absolute() else REPO / path).resolve()
+            if path.is_dir() and path not in roots:
+                roots.append(path)
+    return roots
+
+
+def _under_roots(path: str, roots: list) -> bool:
+    try:
+        rp = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return any(rp.is_relative_to(r) for r in roots)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _server_files(root: str) -> tuple:
+    """(data files under root as paths relative to it, truncated?) — recursive,
+    hidden folders skipped, capped so a huge tree cannot stall the sidebar."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
+        for f in sorted(filenames):
+            if f.lower().endswith(_DATA_SUFFIXES):
+                out.append(os.path.relpath(os.path.join(dirpath, f), root))
+                if len(out) >= SERVER_LIST_CAP:
+                    return out, True
+    return out, False
+
+
+def _server_file_picker() -> Optional[str]:
+    """Pick (or type) a data file inside SERVER_DATA_DIRS. Returns its path or None."""
+    roots = _server_roots()
+    if not roots:
+        st.warning("Chưa có thư mục dữ liệu nào trên server. Quản trị viên cần đặt "
+                   "`SERVER_DATA_DIRS` trong .env (vd: `D:/datasets;/mnt/data`) "
+                   "rồi khởi động lại app.")
+        return None
+    root = roots[0]
+    if len(roots) > 1:
+        root = Path(st.selectbox("Thư mục trên server", [str(r) for r in roots],
+                                 key="server_root"))
+    else:
+        st.caption(f"Thư mục trên server: `{root}`")
+    files, truncated = _server_files(str(root))
+    picked = st.selectbox(
+        "Chọn file trên server", files, index=None, key="server_file",
+        placeholder="Chọn file…" if files else "(thư mục chưa có file dữ liệu)",
+        help="Danh sách tự làm mới sau 30 giây khi có file mới được chép lên server.",
+    )
+    if truncated:
+        st.caption(f"Chỉ hiện {SERVER_LIST_CAP:,} file đầu — dùng ô bên dưới cho file khác.")
+    typed = (st.text_input(
+        "Hoặc nhập đường dẫn trên server",
+        key="server_path",
+        placeholder=str(root / "train.csv"),
+        help="Đường dẫn tuyệt đối, hoặc tương đối so với thư mục đang chọn. Chỉ đọc được "
+             "file nằm trong các thư mục SERVER_DATA_DIRS.",
+    ) or "").strip()
+    if typed:
+        file, sep, sheet = typed.partition("::")      # keep an explicit Excel sheet
+        path = Path(file).expanduser()
+        path = path if path.is_absolute() else root / path
+        if not _under_roots(str(path), roots):
+            st.error("Đường dẫn nằm ngoài các thư mục dữ liệu được phép trên server.")
+            return None
+        return str(path) + sep + sheet
+    return str(root / picked) if picked else None
+
+
 # ── source file selection ─────────────────────────────────────────────────
 
 st.title("AutoML Pipeline")
@@ -273,32 +360,39 @@ with st.sidebar:
 
     src_mode = st.radio(
         "Nguồn dữ liệu",
-        ["Đường dẫn local", "Upload file"],
-        help="Chọn file dataset: csv/tsv/txt (tự nhận dấu phân cách , ; tab |), parquet, "
-             "feather, orc, xlsx/xls/xlsm, json/jsonl; có thể nén .gz/.bz2/.xz/.zip/.zst. "
-             "Với dataset lớn (nhiều GB) nên dùng đường dẫn local cho nhanh.",
+        [SRC_UPLOAD, SRC_SERVER, SRC_S3],
+        help="Định dạng: csv/tsv/txt (tự nhận dấu phân cách , ; tab |), parquet, feather, "
+             "orc, xlsx/xls/xlsm, json/jsonl; có thể nén .gz/.bz2/.xz/.zip/.zst.\n\n"
+             "- **Máy của bạn**: upload file từ máy tính đang mở trình duyệt.\n"
+             "- **Máy server**: file đã có sẵn trên máy chạy app (nhanh nhất cho dataset "
+             "nhiều GB — không phải upload).\n"
+             "- **S3**: s3:// · s3a:// · s3n:// (AWS S3 hoặc S3-compatible như MinIO).",
     )
 
-    input_path = None
-    if src_mode == "Đường dẫn local":
-        input_path = st.text_input(
-            "Đường dẫn file input",
-            placeholder="vd: data/train.csv hoặc s3://bucket/path/train.parquet",
-            help="Đường dẫn tuyệt đối/tương đối tới file trên máy, hoặc URI "
-                 "s3:// · s3a:// · s3n:// (AWS S3 hoặc S3-compatible như MinIO). "
-                 "Với S3 sẽ hiện thêm ô nhập key truy cập.",
-        )
-        input_path = (input_path or "").strip() or None
-        if input_path and input_path.lower().startswith(BaseAgent._S3_SCHEMES):
-            _s3_credentials_panel(input_path)
-    else:
+    input_path, uploaded = None, None
+    if src_mode == SRC_UPLOAD:
         uploaded = st.file_uploader(
-            "Chọn file dataset",
+            "Chọn file từ máy của bạn",
             type=DATA_FILE_TYPES,
-            help="Upload file dataset. File được lưu tạm để pipeline đọc.",
+            help="File được gửi từ trình duyệt lên server và lưu tạm trong workspace để "
+                 "pipeline đọc. File rất lớn nên đặt sẵn trên server và chọn 'Máy server'.",
         )
         if uploaded is not None:
             input_path = _save_upload(uploaded)
+    elif src_mode == SRC_SERVER:
+        input_path = _server_file_picker()
+    else:
+        input_path = (st.text_input(
+            "Đường dẫn S3",
+            placeholder="vd: s3://bucket/path/train.parquet",
+            help="URI s3:// · s3a:// · s3n://. Thư mục (kết thúc bằng /) được đọc như "
+                 "dataset parquet phân vùng.",
+        ) or "").strip() or None
+        if input_path and not BaseAgent.is_s3_path(input_path):
+            st.error("Đường dẫn S3 phải bắt đầu bằng s3://, s3a:// hoặc s3n://.")
+            input_path = None
+        if input_path:
+            _s3_credentials_panel(input_path)
     if not (input_path and input_path.lower().startswith(BaseAgent._S3_SCHEMES)):
         BaseAgent.set_thread_s3_settings(None)  # source is not S3 → no session keys
 
@@ -396,7 +490,7 @@ with out_box:
 # (replay_manifest.json -> source_input). Choosing another file in the sidebar
 # switches back.
 
-_sel_sig = (src_mode, input_path if src_mode == "Đường dẫn local"
+_sel_sig = (src_mode, input_path if src_mode != SRC_UPLOAD
             else (uploaded.name, uploaded.size) if uploaded is not None else None)
 if st.session_state.get("_input_sig", _sel_sig) != _sel_sig:
     # New dataset → start clean: drop the previously viewed run's results.

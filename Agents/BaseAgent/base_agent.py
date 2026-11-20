@@ -24,6 +24,7 @@ class BaseAgent:
     # them (the Streamlit UI: one thread per browser session, so two users with
     # different keys never share a filesystem), otherwise from Config.
     _S3_FS_CACHE: Dict[tuple, Any] = {}
+    _S3_STYLE_CACHE: Dict[tuple, bool] = {}   # (settings, bucket) -> virtual addressing?
     _S3_LOCAL = threading.local()
 
     # Outer compression suffix → pandas compression arg.
@@ -996,12 +997,12 @@ class BaseAgent:
                               no sheet → stack when headers match, else largest sheet
         """
         file, sheet = cls.split_sheet(path)
-        if file.lower().endswith(cls._EXCEL_SUFFIXES) and not path.startswith(cls._S3_SCHEMES):
+        if file.lower().endswith(cls._EXCEL_SUFFIXES) and not cls.is_s3_path(path):
             return cls._read_excel_any(path)
 
         suffix, compression = cls._split_compression(file)
 
-        if path.startswith(cls._S3_SCHEMES):
+        if cls.is_s3_path(path):
             return cls._load_from_s3(file, suffix, compression, sheet=sheet)
 
         # Uncompressed columnar / binary formats
@@ -1034,26 +1035,57 @@ class BaseAgent:
 
     @classmethod
     def s3_settings(cls) -> tuple:
-        """Effective (access, secret, token, region, endpoint, connect_t, request_t)."""
+        """Effective (access, secret, token, region, endpoint, connect_t, request_t).
+
+        A non-empty UI (thread-local) value wins over Config/.env, field by field.
+        Credentials are the exception: they are one set, so once the UI supplies an
+        access key or a secret, all three come from the UI — a UI key is never
+        paired with the .env secret (that mix only yields signature errors)."""
         local = getattr(cls._S3_LOCAL, "settings", None) or {}
 
+        def ui(attr):
+            return (local.get(attr) or "").strip()
+
         def pick(attr):
-            return (local.get(attr) or "").strip() or getattr(Config, attr, "")
-        return (pick("S3_ACCESS_KEY"), pick("S3_SECRET_KEY"), pick("S3_SESSION_TOKEN"),
-                pick("S3_REGION"), pick("S3_ENDPOINT_URL"),
+            return ui(attr) or getattr(Config, attr, "")
+        cred_attrs = ("S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_SESSION_TOKEN")
+        creds = tuple(map(ui if ui("S3_ACCESS_KEY") or ui("S3_SECRET_KEY") else pick, cred_attrs))
+        return (*creds, pick("S3_REGION"), pick("S3_ENDPOINT_URL"),
                 Config.S3_CONNECT_TIMEOUT, Config.S3_REQUEST_TIMEOUT)
 
     @classmethod
-    def _get_s3_filesystem(cls):
+    def is_s3_path(cls, path: Optional[str]) -> bool:
+        """s3:// · s3a:// · s3n:// — scheme matched case-insensitively (the UI does too)."""
+        return bool(path) and str(path).strip().lower().startswith(cls._S3_SCHEMES)
+
+    @classmethod
+    def _s3_bucket_key(cls, path: str) -> str:
+        """'S3A://bucket/dir/file.csv/' → 'bucket/dir/file.csv' (pyarrow wants no scheme)."""
+        return path.strip().split("://", 1)[1].strip("/")
+
+    @staticmethod
+    def _parse_s3_endpoint(endpoint: str) -> tuple:
+        """'https://host:9000/' → ('https', 'host:9000'); a bare 'host:9000' keeps
+        pyarrow's default scheme (None). Any path after the host is dropped —
+        pyarrow's endpoint_override takes host[:port] only."""
+        scheme, sep, rest = endpoint.strip().partition("://")
+        if not sep:
+            scheme, rest = None, endpoint.strip()
+        return (scheme.lower() if scheme else None), rest.split("/", 1)[0]
+
+    @classmethod
+    def _get_s3_filesystem(cls, virtual: bool = False):
         """Build pyarrow.fs.S3FileSystem for the effective settings (thread-local
-        UI settings, else Config) — one cached instance per distinct settings.
+        UI settings, else Config) — one cached instance per distinct settings and
+        addressing style (virtual=True → bucket.host/key, False → host/bucket/key).
 
         Empty credentials fall back to pyarrow's default chain
         (env vars → ~/.aws/credentials → IAM role).
         """
         settings = cls.s3_settings()
-        if settings in cls._S3_FS_CACHE:
-            return cls._S3_FS_CACHE[settings]
+        cache_key = settings + (virtual,)
+        if cache_key in cls._S3_FS_CACHE:
+            return cls._S3_FS_CACHE[cache_key]
         try:
             import pyarrow.fs as fs
         except ImportError as e:
@@ -1073,33 +1105,75 @@ class BaseAgent:
             kwargs["region"] = region
         if endpoint:
             # MinIO-style "http://host:9000" → scheme + bare host for pyarrow
-            if endpoint.startswith(("http://", "https://")):
-                scheme, _, host = endpoint.partition("://")
+            scheme, host = cls._parse_s3_endpoint(endpoint)
+            if scheme:
                 kwargs["scheme"] = scheme
-                endpoint = host.rstrip("/")
-            kwargs["endpoint_override"] = endpoint
+            kwargs["endpoint_override"] = host
+        if virtual:
+            kwargs["force_virtual_addressing"] = True
         if len(cls._S3_FS_CACHE) >= 16:          # many sessions over time — keep it bounded
             cls._S3_FS_CACHE.pop(next(iter(cls._S3_FS_CACHE)))
-        cls._S3_FS_CACHE[settings] = fs.S3FileSystem(**kwargs)
-        return cls._S3_FS_CACHE[settings]
+        cls._S3_FS_CACHE[cache_key] = fs.S3FileSystem(**kwargs)
+        return cls._S3_FS_CACHE[cache_key]
+
+    @classmethod
+    def _s3_fs_for(cls, bucket: str) -> tuple:
+        """(filesystem, virtual) to use for `bucket`.
+
+        S3_ADDRESSING=path|virtual forces a style. "auto" (default) matters only
+        for a custom endpoint: S3-compatible gateways differ — some route only
+        path-style (host/bucket), others only virtual-hosted (bucket.host), and the
+        wrong one answers "bucket does not exist". Path-style is tried first; the
+        virtual style is used only when it finds a bucket that path-style cannot.
+        The decision is cached per (settings, bucket)."""
+        import pyarrow.fs as pafs
+        mode = (getattr(Config, "S3_ADDRESSING", "") or "auto").strip().lower()
+        settings = cls.s3_settings()
+        if mode in ("path", "virtual") or not settings[4]:   # AWS: the SDK picks the style
+            virtual = mode == "virtual"
+            return cls._get_s3_filesystem(virtual), virtual
+        key = settings + (bucket,)
+        if key not in cls._S3_STYLE_CACHE:
+            def found(virtual: bool) -> bool:
+                try:
+                    info = cls._get_s3_filesystem(virtual).get_file_info(bucket)
+                except OSError:      # no HeadBucket permission / bucket.host does not resolve
+                    return False
+                return info.type != pafs.FileType.NotFound
+            if len(cls._S3_STYLE_CACHE) >= 64:
+                cls._S3_STYLE_CACHE.pop(next(iter(cls._S3_STYLE_CACHE)))
+            cls._S3_STYLE_CACHE[key] = not found(False) and found(True)
+        virtual = cls._S3_STYLE_CACHE[key]
+        return cls._get_s3_filesystem(virtual), virtual
 
     @classmethod
     def check_s3_access(cls, path: str) -> str:
         """Cheap connectivity check for a s3:// path with the current Config
         credentials. Returns a short human message; raises on access errors."""
         import pyarrow.fs as pafs
-        s3 = cls._get_s3_filesystem()
-        key = path
-        for scheme in cls._S3_SCHEMES:
-            if path.startswith(scheme):
-                key = path[len(scheme):]
-                break
-        info = s3.get_file_info(key.rstrip("/"))
+        key = cls._s3_bucket_key(path)
+        bucket = key.split("/", 1)[0]
+        s3, virtual = cls._s3_fs_for(bucket)
+        access, _secret, _token, region, endpoint = cls.s3_settings()[:5]
+        # What the check really used — so a UI value that never arrived is visible.
+        using = (f"endpoint={endpoint or 'AWS S3 mặc định'}, region={region or 'tự nhận'}, "
+                 f"key={'…' + access[-4:] if access else 'credential chain'}"
+                 + (f", addressing={'virtual' if virtual else 'path'}" if endpoint else ""))
+        try:
+            bucket_type = s3.get_file_info(bucket).type
+        except OSError:          # e.g. no HeadBucket permission — let the object check decide
+            bucket_type = None
+        if bucket_type == pafs.FileType.NotFound:
+            raise FileNotFoundError(
+                f"Bucket '{bucket}' không tồn tại ở server S3 đang dùng [{using}]. "
+                "Kiểm tra Endpoint URL / Region / tên bucket.")
+        info = s3.get_file_info(key)
         if info.type == pafs.FileType.NotFound:
-            raise FileNotFoundError(f"Không tìm thấy object/thư mục: {path}")
+            raise FileNotFoundError(
+                f"Kết nối được, nhưng không thấy object/thư mục: {path} [{using}]")
         if info.type == pafs.FileType.Directory:
-            return "Kết nối OK — đường dẫn là thư mục (dataset phân vùng)."
-        return f"Kết nối OK — file {info.size / 1e6:,.1f} MB."
+            return f"Kết nối OK — đường dẫn là thư mục (dataset phân vùng). [{using}]"
+        return f"Kết nối OK — file {info.size / 1e6:,.1f} MB. [{using}]"
 
     @classmethod
     def _load_from_s3(cls, path: str, suffix: str,
@@ -1112,17 +1186,11 @@ class BaseAgent:
         single object through pandas, decompressing on the fly when needed.
         """
         import pyarrow.dataset as ds
-        s3 = cls._get_s3_filesystem()
 
-        # Strip whichever scheme the caller used (s3://, s3a://, s3n://).
-        # pyarrow expects bare 'bucket/key' without the scheme prefix.
-        s3_path = path
-        for scheme in cls._S3_SCHEMES:
-            if path.startswith(scheme):
-                s3_path = path[len(scheme):]
-                break
-        # Drop trailing slash so pyarrow.dataset treats it as a folder consistently
-        s3_path = s3_path.rstrip("/")
+        # Strip whichever scheme the caller used (s3://, s3a://, s3n://) and the
+        # trailing slash, so pyarrow.dataset treats a folder consistently.
+        s3_path = cls._s3_bucket_key(path)
+        s3, _ = cls._s3_fs_for(s3_path.split("/", 1)[0])
 
         # Uncompressed columnar / partitioned-capable — single file OR folder both work
         if compression is None:
