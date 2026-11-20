@@ -506,6 +506,9 @@ class Config:
     S3_REGION: str = os.getenv("S3_REGION", "")
     # Override for S3-compatible endpoints (MinIO etc.); leave empty for AWS S3
     S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "")
+    # URL style for a custom endpoint: auto (try path-style, fall back to
+    # virtual-hosted when the bucket is only found that way) | path | virtual
+    S3_ADDRESSING: str = os.getenv("S3_ADDRESSING", "auto")
     # Network timeouts in seconds — bumped to handle large parquet datasets
     S3_CONNECT_TIMEOUT: int = int(os.getenv("S3_CONNECT_TIMEOUT", 300))
     S3_REQUEST_TIMEOUT: int = int(os.getenv("S3_REQUEST_TIMEOUT", 3600))

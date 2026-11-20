@@ -148,13 +148,13 @@ class AutoMLPipeline:
         suffix = inner_suffix or PurePosixPath(path).suffix.lower()
 
         # Local parquet — read schema only
-        if suffix == ".parquet" and not path.startswith(BaseAgent._S3_SCHEMES):
+        if suffix == ".parquet" and not BaseAgent.is_s3_path(path):
             import pyarrow.parquet as pq
             schema = pq.read_schema(path)
             return {f.name: str(f.type) for f in schema}
 
         # Local CSV / TSV — sniff first 1000 rows for dtype inference
-        if suffix in (".csv", ".tsv", ".txt") and not path.startswith(BaseAgent._S3_SCHEMES):
+        if suffix in (".csv", ".tsv", ".txt") and not BaseAgent.is_s3_path(path):
             head_df = BaseAgent.read_csv_smart(path, nrows=1000)
             return {c: str(head_df[c].dtype) for c in head_df.columns}
 
@@ -299,7 +299,7 @@ class AutoMLPipeline:
         inner_suffix, _ = BaseAgent._split_compression(path)
         suffix = inner_suffix or PurePosixPath(path).suffix.lower()
 
-        if suffix == ".parquet" and not path.startswith(BaseAgent._S3_SCHEMES):
+        if suffix == ".parquet" and not BaseAgent.is_s3_path(path):
             import pyarrow.parquet as pq
             pf = pq.ParquetFile(path)
             if pf.metadata.num_rows <= n:
@@ -314,7 +314,7 @@ class AutoMLPipeline:
             df = pd.concat(chunks, ignore_index=True)
             return df.iloc[:n] if len(df) > n else df
 
-        if suffix in (".csv", ".tsv", ".txt") and not path.startswith(BaseAgent._S3_SCHEMES):
+        if suffix in (".csv", ".tsv", ".txt") and not BaseAgent.is_s3_path(path):
             return BaseAgent.read_csv_smart(path, nrows=n)
 
         # Other formats (Excel, Feather, ORC, JSON, S3) — full load. These are
