@@ -37,6 +37,7 @@ joblib==1.5.2
 # LLM clients (OpenAI-compatible: LiteLLM proxy, vLLM, SGLang, Ollama, enterprise gateways)
 openai==2.24.0
 anthropic==0.104.1       # only for LLM_BACKEND=gateway or the Claude direct fallback
+httpx==0.28.1            # gateway http_client (proxy-free); must be the httpx anthropic accepts
 
 # Utilities
 python-dotenv==1.0.1

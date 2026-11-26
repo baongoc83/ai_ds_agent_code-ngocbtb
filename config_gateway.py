@@ -34,6 +34,9 @@ class GatewayConfig(_LegacyConfig):
     # Per-request timeout in milliseconds (LiteLLM convention).
     # 3_000_000 ms = 50 min — covers very long agent reasoning steps.
     API_TIMEOUT_MS: int = int(os.getenv("API_TIMEOUT_MS", 3_000_000))
+    # "" = connect directly (default), "env" = honour HTTPS_PROXY/NO_PROXY,
+    # or an explicit "http://proxy:port" — see get_client().
+    LLM_GATEWAY_PROXY: str = os.getenv("LLM_GATEWAY_PROXY", "")
 
     # ── Model tier aliases (gateway dispatches to actual provider) ───────
     ANTHROPIC_DEFAULT_HAIKU_MODEL: str = os.getenv(
@@ -78,14 +81,22 @@ class GatewayConfig(_LegacyConfig):
     def get_client(cls):
         """Return an anthropic.Anthropic client pointed at the gateway."""
         import anthropic
-        import httpx2
+        import httpx   # must be httpx itself: anthropic rejects any other Client class
         cls.validate()
-        # The gateway is an internal host; httpx2 otherwise inherits the Windows
-        # system proxy (proxy.mbbank.com.vn:8080) and the corporate proxy kills
-        # the TLS handshake with SSL UNEXPECTED_EOF. trust_env=False stops httpx2
-        # from reading proxy settings from env / registry / PAC so we connect
-        # straight to the gateway.
-        http_client = httpx2.Client(trust_env=False)
+        # How to reach the gateway (LLM_GATEWAY_PROXY):
+        #   ""  (default) direct — on a Windows desktop httpx would otherwise inherit
+        #       the system proxy (proxy.mbbank.com.vn:8080), which kills the TLS
+        #       handshake to the internal gateway with SSL UNEXPECTED_EOF;
+        #   "env"  use HTTPS_PROXY / HTTP_PROXY / NO_PROXY — for servers whose only
+        #       way out is a proxy (direct then fails with "No route to host");
+        #   "http://host:port"  this proxy explicitly.
+        proxy = cls.LLM_GATEWAY_PROXY.strip()
+        if proxy.lower() == "env":
+            http_client = httpx.Client(trust_env=True)
+        elif proxy:
+            http_client = httpx.Client(proxy=proxy, trust_env=False)
+        else:
+            http_client = httpx.Client(trust_env=False)
         return anthropic.Anthropic(
             auth_token=cls.ANTHROPIC_AUTH_TOKEN,
             base_url=cls.ANTHROPIC_BASE_URL,
