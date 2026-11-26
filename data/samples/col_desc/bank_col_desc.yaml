@@ -1,0 +1,17 @@
+customer_id: Mô tả cho cột customer_id
+age: Mô tả cho cột age
+monthly_income: Mô tả cho cột monthly_income
+credit_score: Mô tả cho cột credit_score
+total_balance: Mô tả cho cột total_balance
+num_accounts: Mô tả cho cột num_accounts
+num_transactions: Mô tả cho cột num_transactions
+loan_principal: Mô tả cho cột loan_principal
+account_age_years: Mô tả cho cột account_age_years
+region: Mô tả cho cột region
+product_type: Mô tả cho cột product_type
+occupation: Mô tả cho cột occupation
+credit_history_length: Mô tả cho cột credit_history_length
+random_noise: Mô tả cho cột random_noise
+useless_feature: Mô tả cho cột useless_feature
+overdraft_amount: Mô tả cho cột overdraft_amount
+monthly_profit: Mô tả cho cột monthly_profit
