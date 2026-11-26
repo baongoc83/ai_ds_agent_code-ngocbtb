@@ -72,6 +72,51 @@ def table_to_mapping(df: pd.DataFrame, name_f: str, desc_f: str,
     return out
 
 
+def nested_to_mapping(data: dict, with_group: bool) -> dict:
+    """Same rule as FeatureEngineer._parse_nested_json_descriptions."""
+    out = {}
+    for group, cols in data.items():
+        if not isinstance(cols, dict):
+            continue
+        for name, desc in cols.items():
+            desc = str(desc).strip() if desc is not None else ""
+            out[str(name).strip()] = (f"[{group}] {desc}" if desc else f"[{group}]") if with_group else desc
+    return out
+
+
+def desc_mapping(kind: Optional[str], obj, name_f: str, desc_f: str,
+                 group_f: Optional[str]) -> Optional[dict]:
+    """{column: description} exactly as the pipeline will see it, or None when a
+    table file lacks the chosen fields."""
+    if kind == "mapping":
+        return obj
+    if kind == "nested":
+        return nested_to_mapping(obj, bool(group_f))
+    if kind == "table" and name_f in obj.columns and desc_f in obj.columns:
+        return table_to_mapping(obj, name_f, desc_f, group_f or None)
+    return None
+
+
+DESC_OK, DESC_EMPTY, DESC_UNKNOWN, DESC_MISSING = (
+    "✅ khớp", "⚠️ mô tả trống", "❓ không có trong dữ liệu", "➖ chưa có mô tả")
+
+
+def desc_coverage(mapping: dict, columns: Optional[list]) -> pd.DataFrame:
+    """One row per described column, plus the dataset columns that have no
+    description: Cột | Mô tả | Trạng thái. Names match exactly, as in the
+    pipeline. Without `columns` only empty descriptions are flagged."""
+    cols = set(columns or [])
+    rows = []
+    for name, desc in mapping.items():
+        if columns is not None and name not in cols:
+            status = DESC_UNKNOWN
+        else:
+            status = DESC_OK if str(desc).strip() else DESC_EMPTY
+        rows.append((name, desc, status))
+    rows += [(c, "", DESC_MISSING) for c in (columns or []) if c not in mapping]
+    return pd.DataFrame(rows, columns=["Cột", "Mô tả", "Trạng thái"])
+
+
 def to_yaml(obj: dict) -> str:
     return yaml.safe_dump(obj, allow_unicode=True, sort_keys=False, width=100)
 

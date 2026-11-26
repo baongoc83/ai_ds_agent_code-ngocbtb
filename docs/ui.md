@@ -58,6 +58,10 @@ workspace đang chọn**.
   phần còn lại của ổ đĩa. Dataset nhiều GB nên chép sẵn lên server rồi chọn ở đây.
 - **☁️ S3** — URI `s3://` · `s3a://` · `s3n://`.
 
+**Col-description** cũng chọn được từ **Máy của bạn (upload)** hoặc **Máy server** (cùng
+giới hạn `SERVER_DATA_DIRS`). Bản `.normalised.json` sinh ra từ file yaml được ghi vào
+`workspace/_uploads/`, không bao giờ ghi vào thư mục dữ liệu trên server.
+
 Định dạng: csv / tsv / txt (tự nhận dấu phân cách `, ; tab |`, encoding và dấu thập phân
 `1,5`), parquet, feather, orc, xlsx / xls / xlsm, json / jsonl; nén `.gz .bz2 .xz .zip .zst`.
 

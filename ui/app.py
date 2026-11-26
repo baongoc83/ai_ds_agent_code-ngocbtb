@@ -197,6 +197,8 @@ REPO = Path(__file__).resolve().parents[1]
 SRC_UPLOAD, SRC_SERVER, SRC_S3 = "💻 Máy của bạn (upload)", "🖥️ Máy server", "☁️ S3"
 SERVER_LIST_CAP = 2000
 _DATA_SUFFIXES = tuple(f".{t}" for t in DATA_FILE_TYPES)
+COL_DESC_TYPES = ["csv", "tsv", "txt", "json", "yaml", "yml", "parquet", "xlsx", "xls", "xlsm"]
+_COL_DESC_SUFFIXES = tuple(f".{t}" for t in COL_DESC_TYPES)
 
 
 def _server_roots() -> list:
@@ -221,22 +223,24 @@ def _under_roots(path: str, roots: list) -> bool:
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def _server_files(root: str) -> tuple:
-    """(data files under root as paths relative to it, truncated?) — recursive,
-    hidden folders skipped, capped so a huge tree cannot stall the sidebar."""
+def _server_files(root: str, suffixes: tuple = _DATA_SUFFIXES) -> tuple:
+    """(files under root ending in `suffixes`, as paths relative to it; truncated?)
+    — recursive, hidden folders skipped, capped so a huge tree cannot stall the sidebar."""
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith((".", "__")))
         for f in sorted(filenames):
-            if f.lower().endswith(_DATA_SUFFIXES):
+            if f.lower().endswith(suffixes):
                 out.append(os.path.relpath(os.path.join(dirpath, f), root))
                 if len(out) >= SERVER_LIST_CAP:
                     return out, True
     return out, False
 
 
-def _server_file_picker() -> Optional[str]:
-    """Pick (or type) a data file inside SERVER_DATA_DIRS. Returns its path or None."""
+def _server_file_picker(key: str = "server", suffixes: tuple = _DATA_SUFFIXES,
+                        example: str = "train.csv") -> Optional[str]:
+    """Pick (or type) a file inside SERVER_DATA_DIRS. Returns its path or None.
+    `key` namespaces the widgets so several pickers can share one page."""
     roots = _server_roots()
     if not roots:
         st.warning("Chưa có thư mục dữ liệu nào trên server. Quản trị viên cần đặt "
@@ -246,21 +250,21 @@ def _server_file_picker() -> Optional[str]:
     root = roots[0]
     if len(roots) > 1:
         root = Path(st.selectbox("Thư mục trên server", [str(r) for r in roots],
-                                 key="server_root"))
+                                 key=f"{key}_root"))
     else:
         st.caption(f"Thư mục trên server: `{root}`")
-    files, truncated = _server_files(str(root))
+    files, truncated = _server_files(str(root), suffixes)
     picked = st.selectbox(
-        "Chọn file trên server", files, index=None, key="server_file",
-        placeholder="Chọn file…" if files else "(thư mục chưa có file dữ liệu)",
+        "Chọn file trên server", files, index=None, key=f"{key}_file",
+        placeholder="Chọn file…" if files else "(thư mục chưa có file phù hợp)",
         help="Danh sách tự làm mới sau 30 giây khi có file mới được chép lên server.",
     )
     if truncated:
         st.caption(f"Chỉ hiện {SERVER_LIST_CAP:,} file đầu — dùng ô bên dưới cho file khác.")
     typed = (st.text_input(
         "Hoặc nhập đường dẫn trên server",
-        key="server_path",
-        placeholder=str(root / "train.csv"),
+        key=f"{key}_path",
+        placeholder=str(root / example),
         help="Đường dẫn tuyệt đối, hoặc tương đối so với thư mục đang chọn. Chỉ đọc được "
              "file nằm trong các thư mục SERVER_DATA_DIRS.",
     ) or "").strip()
@@ -413,15 +417,20 @@ with st.sidebar:
 
     col_desc_path = None
     col_desc_kind, col_desc_obj = None, None
-    col_desc_uploaded = st.file_uploader(
-        "Col-description (tùy chọn)",
-        type=["csv", "tsv", "txt", "json", "yaml", "yml", "parquet", "xlsx", "xls", "xlsm"],
+    cd_src = st.radio(
+        "Col-description (tùy chọn)", [SRC_UPLOAD, SRC_SERVER], key="cd_src",
         help="File mô tả cột giúp Agent 2 (Feature Engineer) hiểu ngữ cảnh từng "
              "cột. Nếu file đã ở dạng `tên_cột: mô_tả` (json/yaml) thì không cần "
              "khai báo field.",
     )
-    if col_desc_uploaded is not None:
-        col_desc_path = _save_upload(col_desc_uploaded)
+    if cd_src == SRC_UPLOAD:
+        col_desc_uploaded = st.file_uploader("Chọn file col-description từ máy của bạn",
+                                             type=COL_DESC_TYPES)
+        if col_desc_uploaded is not None:
+            col_desc_path = _save_upload(col_desc_uploaded)
+    else:
+        col_desc_path = _server_file_picker("cd_server", _COL_DESC_SUFFIXES, "col_desc.json")
+    if col_desc_path:
         try:
             col_desc_kind, col_desc_obj = data_view.read_desc_file(col_desc_path)
         except Exception as e:  # noqa: BLE001
@@ -430,9 +439,12 @@ with st.sidebar:
 
     col_name_field, col_desc_field, col_group_field = "column_name", "description", ""
     if col_desc_kind in ("mapping", "nested") and Path(col_desc_path).suffix.lower() != ".json":
-        # pipeline only reads .json: hand it a normalised copy of the yaml (same
-        # staging area as uploads — written once per source file)
-        _json_copy = Path(col_desc_path).with_suffix(".normalised.json")
+        # pipeline only reads .json: hand it a normalised copy of the yaml. It goes
+        # to this workspace's staging area — never next to the source, which may be
+        # a shared (or read-only) server folder. One copy per source path + mtime.
+        _sig = hashlib.sha256(f"{col_desc_path}|{_mtime(col_desc_path)}".encode()).hexdigest()[:12]
+        _json_copy = (workspace.uploads_dir(Config.OUTPUT_DIR, WS_NAME)
+                      / f"{Path(col_desc_path).stem[:60]}_{_sig}.normalised.json")
         if not _json_copy.exists():
             _json_copy.write_text(json.dumps(col_desc_obj, ensure_ascii=False), encoding="utf-8")
         col_desc_path = str(_json_copy)
@@ -446,6 +458,22 @@ with st.sidebar:
                                            help="Tên cột chứa mô tả trong file col-desc.")
         col_group_field = st.text_input("col_group_field", value="",
                                         help="(Tùy chọn) Tên cột nhóm/table trong file col-desc. Để trống nếu không có.")
+
+    # Preview right where the file is chosen — the mapping exactly as the
+    # pipeline will read it (fields / group prefix applied).
+    col_desc_map = (data_view.desc_mapping(col_desc_kind, col_desc_obj, col_name_field,
+                                           col_desc_field, col_group_field)
+                    if col_desc_kind else None)
+    if col_desc_kind:
+        _n = f" ({len(col_desc_map):,} cột)" if col_desc_map is not None else ""
+        with st.expander(f"👁 Xem trước col-description{_n}", expanded=True):
+            if col_desc_map is None:
+                st.warning(f"Không thấy field `{col_name_field}` / `{col_desc_field}` trong "
+                           f"file. Các cột có sẵn: {list(col_desc_obj.columns)}")
+                st.dataframe(data_view.arrow_safe(col_desc_obj.head(20)), height=220)
+            else:
+                st.dataframe(pd.DataFrame(list(col_desc_map.items()), columns=["Cột", "Mô tả"]),
+                             hide_index=True, height=260)
 
     auto_config = st.toggle(
         "Auto-config từ dữ liệu",
@@ -598,17 +626,24 @@ try:
 except Exception as e:  # noqa: BLE001
     st.warning(f"Không tính được thống kê: {e}")
 
-if col_desc_kind in ("mapping", "nested", "table"):
-    st.subheader("Mô tả cột (YAML)")
-    if col_desc_kind == "table":
-        if col_name_field in col_desc_obj.columns and col_desc_field in col_desc_obj.columns:
-            st.code(data_view.to_yaml(data_view.table_to_mapping(
-                col_desc_obj, col_name_field, col_desc_field, col_group_field or None)),
-                language="yaml")
-        else:
-            st.warning(f"Không thấy field trong file. Các cột có sẵn: {list(col_desc_obj.columns)}")
+if col_desc_kind:
+    st.subheader("Mô tả cột")
+    if col_desc_map is None:
+        st.warning(f"Không thấy field trong file. Các cột có sẵn: {list(col_desc_obj.columns)}")
     else:
-        st.code(data_view.to_yaml(col_desc_obj), language="yaml")
+        # Coverage against the dataset: names must match exactly for Agent 2 to use them.
+        _cov = data_view.desc_coverage(col_desc_map, columns)
+        _cnt = _cov["Trạng thái"].value_counts()
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _c1.metric("Cột có mô tả", f"{_cnt.get(data_view.DESC_OK, 0):,} / {len(columns):,}")
+        _c2.metric("Chưa có mô tả", f"{_cnt.get(data_view.DESC_MISSING, 0):,}")
+        _c3.metric("Tên không có trong dữ liệu", f"{_cnt.get(data_view.DESC_UNKNOWN, 0):,}",
+                   help="Tên trong file mô tả không trùng tên cột nào của dataset "
+                        "(sai chính tả, khác hoa/thường, thừa khoảng trắng…).")
+        _c4.metric("Mô tả trống", f"{_cnt.get(data_view.DESC_EMPTY, 0):,}")
+        st.dataframe(_cov, hide_index=True, width="stretch")
+        with st.expander("Xem dạng YAML"):
+            st.code(data_view.to_yaml(col_desc_map), language="yaml")
 
 # ── config panel ──────────────────────────────────────────────────────────
 
