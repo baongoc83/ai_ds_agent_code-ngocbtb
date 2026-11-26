@@ -1,0 +1,23 @@
+{
+ "khach_hang": {
+  "customer_id": "KH: customer_id",
+  "age": "KH: age",
+  "monthly_income": "KH: monthly_income",
+  "credit_score": "KH: credit_score",
+  "total_balance": "KH: total_balance",
+  "num_accounts": "KH: num_accounts"
+ },
+ "tai_chinh": {
+  "num_transactions": "TC: num_transactions",
+  "loan_principal": "TC: loan_principal",
+  "account_age_years": "TC: account_age_years",
+  "region": "TC: region",
+  "product_type": "TC: product_type",
+  "occupation": "TC: occupation",
+  "credit_history_length": "TC: credit_history_length",
+  "random_noise": "TC: random_noise",
+  "useless_feature": "TC: useless_feature",
+  "overdraft_amount": "TC: overdraft_amount",
+  "monthly_profit": "TC: monthly_profit"
+ }
+}
